@@ -414,3 +414,140 @@ module wishbone_master #(
     assign retry_count_o = retry_count;
 
 endmodule
+module wishbone_slave #(
+    parameter int WB_ADDR_W = 32,
+    parameter int WB_DATA_W = 32,
+    parameter int MEM_DEPTH = 256
+)(
+    //------------------------------------------------
+    // Global Signals
+    //------------------------------------------------
+    input  logic                     CLK_I,
+    input  logic                     RST_N,
+
+    //------------------------------------------------
+    // Wishbone Signals
+    //------------------------------------------------
+    input  logic [WB_ADDR_W-1:0]     ADR_I,
+    input  logic [WB_DATA_W-1:0]     DAT_I,
+    output logic [WB_DATA_W-1:0]     DAT_O,
+
+    input  logic [(WB_DATA_W/8)-1:0] SEL_I,
+
+    input  logic                     WE_I,
+    input  logic                     STB_I,
+    input  logic                     CYC_I,
+
+    output logic                     ACK_O,
+    output logic                     ERR_O,
+    output logic                     RTY_O,
+
+    input  logic [2:0]               CTI_I,
+    input  logic [1:0]               BTE_I
+);
+
+    //------------------------------------------------
+    // Wishbone Constants
+    //------------------------------------------------
+    localparam logic [2:0] CTI_CLASSIC      = 3'b000;
+    localparam logic [2:0] CTI_CONST_ADDR   = 3'b001;
+    localparam logic [2:0] CTI_INCR_ADDR    = 3'b010;
+    localparam logic [2:0] CTI_END_OF_BURST = 3'b111;
+
+    localparam int BYTE_WIDTH = WB_DATA_W / 8;
+    localparam int ADDR_LSB   = $clog2(BYTE_WIDTH);
+
+    //------------------------------------------------
+    // Simple Internal Memory
+    //------------------------------------------------
+    logic [WB_DATA_W-1:0] mem [0:MEM_DEPTH-1];
+
+    //------------------------------------------------
+    // Internal Registers
+    //------------------------------------------------
+    logic [WB_DATA_W-1:0] rd_data_reg;
+    logic                  ack_reg;
+
+    logic [$clog2(MEM_DEPTH)-1:0] word_addr;
+
+    //------------------------------------------------
+    // Word Address Extraction
+    //------------------------------------------------
+    assign word_addr =
+        ADR_I[ADDR_LSB + $clog2(MEM_DEPTH)-1 : ADDR_LSB];
+
+    //------------------------------------------------
+    // Error / Retry
+    //------------------------------------------------
+    assign ERR_O = 1'b0;
+    assign RTY_O = 1'b0;
+
+    //------------------------------------------------
+    // ACK Generation
+    //------------------------------------------------
+    always_ff @(posedge CLK_I or negedge RST_N) begin
+
+        if (!RST_N)
+            ack_reg <= 1'b0;
+
+        else
+            ack_reg <= (CYC_I && STB_I && !ack_reg);
+    end
+
+    assign ACK_O = ack_reg;
+
+    //------------------------------------------------
+    // Read / Write Logic
+    //------------------------------------------------
+    integer i;
+
+    always_ff @(posedge CLK_I or negedge RST_N) begin
+
+        if (!RST_N) begin
+
+            rd_data_reg <= '0;
+
+            //------------------------------------------------
+            // Optional Memory Initialization
+            //------------------------------------------------
+            for (i = 0; i < MEM_DEPTH; i = i + 1)
+                mem[i] <= '0;
+        end
+
+        else begin
+
+            //------------------------------------------------
+            // Valid Wishbone Transaction
+            //------------------------------------------------
+            if (CYC_I && STB_I && !ack_reg) begin
+
+                //------------------------------------------------
+                // WRITE Operation
+                //------------------------------------------------
+                if (WE_I) begin
+
+                    for (i = 0; i < BYTE_WIDTH; i = i + 1) begin
+
+                        if (SEL_I[i]) begin
+                            mem[word_addr][8*i +: 8] <=
+                                DAT_I[8*i +: 8];
+                        end
+                    end
+                end
+
+                //------------------------------------------------
+                // READ Operation
+                //------------------------------------------------
+                else begin
+                    rd_data_reg <= mem[word_addr];
+                end
+            end
+        end
+    end
+
+    //------------------------------------------------
+    // Read Data Output
+    //------------------------------------------------
+    assign DAT_O = rd_data_reg;
+
+endmodule
